@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  service_a:
+    build: ./service_a
+    container_name: service_a
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  service_b:
+    build: ./service_b
+    container_name: service_b
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq/
+      - REDIS_URL=redis
+    ports:
+      - "8001:8001"
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/docs"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+
+  worker:
+    build: ./worker 
+    container_name: worker
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq/
+      - A_SERVICE_URL=http://service_a:8000/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      service_b:
+        condition: service_started

@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 redis_pool: redis.ConnectionPool | None = None
+rabbit_connection: aio_pika.RobustConnection | None = None
+rabbit_channel: aio_pika.Channel | None = None
+
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost/")
 REDIS_URL = os.getenv("REDIS_URL", "localhost")
@@ -54,12 +57,16 @@ async def results_consumer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_pool
+    global redis_pool, rabbit_channel, rabbit_connection
     redis_pool = redis.ConnectionPool(
         host=REDIS_URL, port=6379, db=0, decode_responses=True
     )
     logger.info("Redis client initialized")
-
+    rabbit_connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    rabbit_channel = await rabbit_connection.channel()
+    await rabbit_channel.declare_queue(TASK_QUEUE_NAME, durable=True)
+    await rabbit_channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
+    logger.info("RabbitMQ connected")
     consumer_task = asyncio.create_task(results_consumer())
     yield
     consumer_task.cancel()
@@ -69,7 +76,8 @@ async def lifespan(app: FastAPI):
         logger.info("RabbitMQ consumer task cancelled")
 
     redis_pool.close()
-    logger.info("Redis connection closed")
+    await rabbit_connection.close()
+    logger.info("Redis and RabbitMQ connections closed")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -81,16 +89,18 @@ class TaskStatus(Enum):
 
 
 async def send_to_queue(body: dict):
-    connection = await aio_pika.connect_robust(RABBITMQ_URL)
-    channel = await connection.channel()
-    await channel.declare_queue(TASK_QUEUE_NAME, durable=True)
+    if rabbit_channel is None:
+        raise RuntimeError("RabbitMQ channel is not initialized")
 
     message = aio_pika.Message(
         body=json.dumps(body).encode(),
         delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
     )
-    await channel.default_exchange.publish(message, routing_key=TASK_QUEUE_NAME)
-    await connection.close()
+    await rabbit_channel.default_exchange.publish(message, routing_key=TASK_QUEUE_NAME)
+
+
+def get_sender():
+    return send_to_queue
 
 
 @app.post("/api/v1/equipment/cpe/{cpe_id}")
@@ -98,6 +108,7 @@ async def task_creation_api(
     request_body: ProvisioningRequest,
     cpe_id: str = Path(..., pattern=r"^[a-zA-Z0-9]{6,}$"),
     redis_client: redis.Redis = Depends(get_redis),
+    send_to_queue=Depends(get_sender),
 ) -> TaskCreationResponse:
     task_id = str(uuid.uuid4())
 

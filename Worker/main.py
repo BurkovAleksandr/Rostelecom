@@ -65,9 +65,20 @@ async def handle_task(
             logger.exception(f"Error handling message: {e}")
 
 
+async def connect_rabbitmq(url):
+    for i in range(10):
+        try:
+            connection = await aio_pika.connect_robust(url)
+            return connection
+        except Exception as e:
+            print(f"Failed to connect to RabbitMQ, retrying in {2**i} seconds...")
+            await asyncio.sleep(2**i)
+    raise Exception("Could not connect to RabbitMQ after retries")
+
+
 async def main():
-    
-    connection = await aio_pika.connect_robust(RABBITMQ_URL)
+
+    connection = await connect_rabbitmq(url=RABBITMQ_URL)
     # Канал для чтения задач
     task_channel = await connection.channel()
     task_queue = await task_channel.declare_queue(TASK_QUEUE_NAME, durable=True)
@@ -76,9 +87,7 @@ async def main():
     result_channel = await connection.channel()
     await result_channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
     await task_queue.consume(
-        lambda msg: asyncio.create_task(
-            handle_task(msg, result_channel=result_channel)
-        )
+        lambda msg: asyncio.create_task(handle_task(msg, result_channel=result_channel))
     )
     logger.info("Worker started.")
     await asyncio.Future()

@@ -32,8 +32,19 @@ def get_redis() -> redis.Redis:
     return redis.Redis(connection_pool=redis_pool)
 
 
+async def connect_rabbitmq(url):
+    for i in range(10):
+        try:
+            connection = await aio_pika.connect_robust(url)
+            return connection
+        except Exception as e:
+            print(f"Failed to connect to RabbitMQ, retrying in {2**i} seconds...")
+            await asyncio.sleep(2**i)
+    raise Exception("Could not connect to RabbitMQ after retries")
+
+
 async def results_consumer():
-    connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    connection = await connect_rabbitmq(url=RABBITMQ_URL)
     channel = await connection.channel()
     queue = await channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
 
@@ -62,7 +73,7 @@ async def lifespan(app: FastAPI):
         host=REDIS_URL, port=6379, db=0, decode_responses=True
     )
     logger.info("Redis client initialized")
-    rabbit_connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    rabbit_connection = await connect_rabbitmq(url=RABBITMQ_URL)
     rabbit_channel = await rabbit_connection.channel()
     await rabbit_channel.declare_queue(TASK_QUEUE_NAME, durable=True)
     await rabbit_channel.declare_queue(RESULT_QUEUE_NAME, durable=True)

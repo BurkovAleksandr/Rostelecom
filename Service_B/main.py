@@ -35,7 +35,7 @@ async def results_consumer():
     queue = await channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
 
     redis_client = get_redis()
-
+    logger.info("Results queue listener started")
     async with queue.iterator() as queue_iter:
         async for message in queue_iter:
             async with message.process():
@@ -106,12 +106,13 @@ async def task_creation_api(
         "task_id": task_id,
         "request": request_body.model_dump(),
     }
-
+    redis_client.setex(
+        f"cpe:{cpe_id}:task:{task_id}",
+        60 * 5,
+        json.dumps({"status": "pending"}),
+    )
     await send_to_queue(message)
 
-    redis_client.setex(
-        f"cpe:{cpe_id}:task:{task_id}", 60 * 5, json.dumps({"status": "pending"})
-    )
     logger.info(f"Task request for equipment {cpe_id} with task_id: {task_id}.")
 
     return TaskCreationResponse(taskId=task_id)
@@ -122,7 +123,7 @@ def result_check_api(
     id: str = Path(..., pattern=r"^[a-zA-Z0-9]{6,}$"),
     task_id: uuid.UUID = Path(...),
     redis_client: redis.Redis = Depends(get_redis),
-) -> dict[str, str]:
+):
     redis_key = f"cpe:{id}:task:{str(task_id)}"
     raw_value = redis_client.get(redis_key)
 
@@ -139,7 +140,7 @@ def result_check_api(
     if status == "pending":
         return Response(
             content=json.dumps({"code": 204, "message": "Task is still running"}),
-            status_code=204,
+            status_code=200,
             media_type="application/json",
         )
 

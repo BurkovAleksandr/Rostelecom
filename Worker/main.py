@@ -1,14 +1,8 @@
-# По сути это аналог celery воркера.
-# Его задача слушать очередь с тасками от сервиса b, при наличии задачи вызывать post сервиса A,
-# а в конце складывать результат в очередь с результатом которую будет слушать сервис b
-
-
 import asyncio
 import os
 import aio_pika
 import json
 import logging
-import uuid
 import aiohttp
 
 logging.basicConfig(level=logging.INFO)
@@ -18,10 +12,13 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost/")
 TASK_QUEUE_NAME = "tasks_queue"
 RESULT_QUEUE_NAME = "results_queue"
 
-A_SERVICE_URL = os.getenv("A_SERVICE_URL", "localhost")  # заменить на актуальный
+A_SERVICE_URL = os.getenv("A_SERVICE_URL", "localhost")
 
 
-async def handle_task(message: aio_pika.IncomingMessage):
+async def handle_task(
+    message: aio_pika.IncomingMessage,
+    result_channel: aio_pika.Channel,
+):
     async with message.process():
         try:
             data = json.loads(message.body.decode())
@@ -46,9 +43,7 @@ async def handle_task(message: aio_pika.IncomingMessage):
                     result = {"error": str(e)}
 
             # Публикуем результат
-            connection = await aio_pika.connect_robust(RABBITMQ_URL)
-            channel = await connection.channel()
-            await channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
+
             response = {
                 "cpe_id": cpe_id,
                 "task_id": task_id,
@@ -58,24 +53,33 @@ async def handle_task(message: aio_pika.IncomingMessage):
                     "payload": result,
                 },
             }
-            await channel.default_exchange.publish(
+            await result_channel.default_exchange.publish(
                 aio_pika.Message(
                     body=json.dumps(response).encode(),
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 ),
                 routing_key=RESULT_QUEUE_NAME,
             )
-            await connection.close()
             logger.info(f"Task {task_id} completed with status {status}")
         except Exception as e:
             logger.exception(f"Error handling message: {e}")
 
 
 async def main():
+    
     connection = await aio_pika.connect_robust(RABBITMQ_URL)
-    channel = await connection.channel()
-    queue = await channel.declare_queue(TASK_QUEUE_NAME, durable=True)
-    await queue.consume(lambda msg: asyncio.create_task(handle_task(msg)))
+    # Канал для чтения задач
+    task_channel = await connection.channel()
+    task_queue = await task_channel.declare_queue(TASK_QUEUE_NAME, durable=True)
+
+    # Канал для записи результатов
+    result_channel = await connection.channel()
+    await result_channel.declare_queue(RESULT_QUEUE_NAME, durable=True)
+    await task_queue.consume(
+        lambda msg: asyncio.create_task(
+            handle_task(msg, result_channel=result_channel)
+        )
+    )
     logger.info("Worker started.")
     await asyncio.Future()
 

@@ -12,7 +12,8 @@ pip-delete-this-directory.txt
 .coverage
 .cache
 .pytest_cache/
-
+cert.pem
+key.pem
 # Docker
 .dockerignore
 

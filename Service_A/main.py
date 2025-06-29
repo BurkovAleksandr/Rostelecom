@@ -30,6 +30,7 @@ async def configure_equipment(
 ) -> dict[str, Any]:
     """
     Функция конфигурации
+    Добавил несколько специфичных id на которые заглушка будет реагировать по разному
     """
     logger.info(
         f"Received request for equipment {id} with timeout {request_body.timeoutInSeconds}s."

@@ -35,7 +35,7 @@ def client(mocked_sender, fake_redis):
     app.dependency_overrides.clear()
 
 
-def test_configuration_api_good(client: TestClient, redis_client: Redis):
+def test_configuration_api_good(client: TestClient, fake_redis: fakeredis.FakeRedis):
     """Тест когда все данные правильные"""
     cpe_id = 123123123
     data = {
@@ -55,7 +55,7 @@ def test_configuration_api_good(client: TestClient, redis_client: Redis):
     task_id = data.get("taskId")
     assert isinstance(task_id, str)
     redis_key = f"cpe:{cpe_id}:task:{task_id}"
-    value = redis_client.get(redis_key)
+    value = fake_redis.get(redis_key)
     assert value
 
     redis_data = json.loads(value)
@@ -109,23 +109,37 @@ def test_get_result_pending(client: TestClient, fake_redis: fakeredis.FakeRedis)
     response = client.get(f"/api/v1/equipment/cpe/{cpe_id}/task/{task_id}")
 
     assert response.status_code == 200
-    assert response.json() == {"code": 200, "message": "pending"}
+    assert response.json() == {"code": 204, "message": "Task is still running"}
 
 
 def test_get_result_not_found(client: TestClient):
     cpe_id = "ABC123"
     task_id = str(uuid.uuid4())
+    response = client.get(f"/api/v1/equipment/cpe/{cpe_id}/task/{task_id}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "The requested task is not found"}
+
+
+def test_get_result_500_error(client: TestClient, fake_redis):
+    cpe_id = "ABC123"
+    task_id = str(uuid.uuid4())
     redis_key = f"cpe:{cpe_id}:task:{task_id}"
-    # fake_redis.set(redis_key, json.dumps({"status": "completed"}))
+    fake_redis.set(redis_key, "invalid")
 
     response = client.get(f"/api/v1/equipment/cpe/{cpe_id}/task/{task_id}")
 
-    assert response.status_code == 200
-    assert response.json() == {"code": 404, "message": "notfound"}
-
-def test_get_result_500_error(client: TestClient):
-    pass
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal provisioning exception"}
 
 
-def test_get_result_500_error_task_failed(client: TestClient):
-    pass
+def test_get_result_500_error_task_failed(client: TestClient, fake_redis):
+    cpe_id = "XYZ456"
+    task_id = str(uuid.uuid4())
+    redis_key = f"cpe:{cpe_id}:task:{task_id}"
+
+    fake_redis.set(redis_key, json.dumps({"status": "failed"}))
+
+    response = client.get(f"/api/v1/equipment/cpe/{cpe_id}/task/{task_id}")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal provisioning exception"}
